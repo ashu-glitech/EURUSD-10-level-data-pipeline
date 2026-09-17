@@ -29,10 +29,11 @@ live_state = {
     "hf_sync_status": "READY ☁️" if HF_TOKEN else "SET HF_TOKEN IN ENV",
     "last_update": "N/A",
     "total_snapshots": 0,
+    "current_price": 0.0,
     "current_file": ""
 }
 
-app = FastAPI(title="Nifty Tradovate Live Collector")
+app = FastAPI(title="EUR/USD Tradovate Live Collector")
 
 def run_fastapi():
     port = int(os.getenv("PORT", 10000))
@@ -47,7 +48,7 @@ def dashboard():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>🚀 Nifty Tradovate Quant Engine</title>
+        <title>🚀 EUR/USD Quant Engine</title>
         <meta http-equiv="refresh" content="2">
         <style>
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0e14; color: #fff; text-align: center; padding: 40px; }}
@@ -55,7 +56,7 @@ def dashboard():
             h1 {{ color: #00e676; font-size: 24px; margin-bottom: 5px; }}
             .stat {{ font-size: 32px; font-weight: bold; margin: 15px 0; color: #fff; }}
             .hf-badge {{ display: inline-block; padding: 4px 14px; border-radius: 12px; background: #1c2738; font-size: 12px; color: #58a6ff; margin-bottom: 15px; border: 1px solid #58a6ff; }}
-            .grid {{ display: grid; grid-template-columns: 1fr; gap: 15px; text-align: left; margin: 20px 0; }}
+            .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; text-align: left; margin: 20px 0; }}
             .box {{ background: #1a202c; padding: 15px; border-radius: 10px; }}
             .label {{ color: #8b949e; font-size: 12px; }}
             .val {{ font-size: 18px; font-weight: bold; margin-top: 5px; color: #00e676; }}
@@ -67,13 +68,19 @@ def dashboard():
     </head>
     <body>
         <div class="card">
-            <h1>🚀 Nifty Tradovate Quant Engine</h1>
+            <h1>🇪🇺🇺🇸 EUR/USD (6EZ6) Quant Engine</h1>
             <div class="hf-badge">Hugging Face Vault: {live_state["hf_sync_status"]}</div><br>
+            
+            <div class="stat">${live_state["current_price"]}</div>
             
             <div class="grid">
                 <div class="box">
                     <div class="label">Total Raw Payloads Recorded</div>
                     <div class="val">{live_state["total_snapshots"]:,} Active Ticks</div>
+                </div>
+                <div class="box">
+                    <div class="label">Target Data Type</div>
+                    <div class="val">Parquet Vault</div>
                 </div>
             </div>
 
@@ -227,6 +234,17 @@ def process_market_data(md_data):
         row = {"timestamp": ts, "raw_payload": json.dumps(md_data)}
         collected_data.append(row)
         
+        # Parse price for UI
+        try:
+            if "quotes" in md_data:
+                for q in md_data["quotes"]:
+                    if "entries" in q and "Trade" in q["entries"]:
+                        live_state["current_price"] = q["entries"]["Trade"].get("price", live_state["current_price"])
+                    elif "entries" in q and "Bid" in q["entries"]:
+                        live_state["current_price"] = q["entries"]["Bid"].get("price", live_state["current_price"])
+        except:
+            pass
+
         live_state["total_snapshots"] += 1
         live_state["last_update"] = ts
         
