@@ -3,3 +3,5 @@ pandas
 pyarrow
 requests
 huggingface_hub
+fastapi
+uvicorn

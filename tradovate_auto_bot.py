@@ -6,8 +6,10 @@ import threading
 import pandas as pd
 from datetime import datetime
 import requests
-import http.server
-import socketserver
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+import uvicorn
+import zipfile
 from huggingface_hub import HfApi, create_repo
 
 # ==============================================================================
@@ -20,18 +22,86 @@ HF_REPO_ID = "gavali77/nifty-tradovate-live-data"
 UPLOAD_INTERVAL_SECONDS = 300 # Upload to HF every 5 mins
 last_hf_upload_time = time.time()
 
-class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot is alive and running!")
+live_state = {
+    "status": "ACTIVE 🟢",
+    "hf_sync_status": "READY ☁️" if HF_TOKEN else "SET HF_TOKEN IN ENV",
+    "last_update": "N/A",
+    "total_snapshots": 0,
+    "current_file": ""
+}
 
-def start_health_server():
-    PORT = int(os.environ.get("PORT", 10000))
-    with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
-        print(f"🟢 [UPTIME ROBOT] Health Server listening on port {PORT}...")
-        httpd.serve_forever()
+app = FastAPI(title="Nifty Tradovate Live Collector")
+
+def run_fastapi():
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    files = [f for f in os.listdir(".") if f.endswith(".csv") and "tradovate_" in f]
+    files_html = "".join([f'<li><a href="/download/{f}" style="color:#00e676; text-decoration:none;">📥 {f}</a></li>' for f in files]) or "<li>No files yet...</li>"
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>🚀 Nifty Tradovate Quant Engine</title>
+        <meta http-equiv="refresh" content="2">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0e14; color: #fff; text-align: center; padding: 40px; }}
+            .card {{ background: #151922; border: 1px solid #232936; border-radius: 16px; padding: 25px; max-width: 650px; margin: 0 auto; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }}
+            h1 {{ color: #00e676; font-size: 24px; margin-bottom: 5px; }}
+            .stat {{ font-size: 32px; font-weight: bold; margin: 15px 0; color: #fff; }}
+            .hf-badge {{ display: inline-block; padding: 4px 14px; border-radius: 12px; background: #1c2738; font-size: 12px; color: #58a6ff; margin-bottom: 15px; border: 1px solid #58a6ff; }}
+            .grid {{ display: grid; grid-template-columns: 1fr; gap: 15px; text-align: left; margin: 20px 0; }}
+            .box {{ background: #1a202c; padding: 15px; border-radius: 10px; }}
+            .label {{ color: #8b949e; font-size: 12px; }}
+            .val {{ font-size: 18px; font-weight: bold; margin-top: 5px; color: #00e676; }}
+            .files {{ text-align: left; margin-top: 25px; background: #1a202c; padding: 15px; border-radius: 10px; }}
+            .btn-zip {{ display: inline-block; background: #ff9800; color: #000; padding: 8px 16px; border-radius: 8px; font-weight: bold; text-decoration: none; margin-top: 10px; }}
+            ul {{ list-style-type: none; padding: 0; }}
+            li {{ padding: 8px 0; border-bottom: 1px solid #2d3748; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>🚀 Nifty Tradovate Quant Engine</h1>
+            <div class="hf-badge">Hugging Face Vault: {{live_state["hf_sync_status"]}}</div><br>
+            
+            <div class="grid">
+                <div class="box">
+                    <div class="label">Total Raw Payloads Recorded</div>
+                    <div class="val">{{live_state["total_snapshots"]:,}} Active Ticks</div>
+                </div>
+            </div>
+
+            <div class="files">
+                <div class="label" style="font-weight:bold; margin-bottom: 8px; color: #fff;">💾 Download Daily CSV Files (1 File / Day):</div>
+                <ul>{{files_html}}</ul>
+                <a href="/download-zip" class="btn-zip">📦 Download ALL Days (ZIP)</a>
+                <a href="https://huggingface.co/datasets/{{HF_REPO_ID}}" target="_blank" style="display:inline-block; margin-left: 10px; color:#58a6ff; text-decoration:none; font-size:12px;">☁️ Open HuggingFace Vault ↗</a>
+            </div>
+            <p style="color: #6e7681; font-size: 11px; margin-top: 15px;">Last Update: {{live_state["last_update"]}}</p>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+@app.get("/download-zip")
+def download_zip():
+    zip_path = "tradovate_all_days.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for f in os.listdir("."):
+            if f.endswith(".csv") and "tradovate_" in f:
+                zipf.write(f, arcname=f)
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path)
+
+@app.get("/download/{filename}")
+def download_file(filename: str):
+    if os.path.exists(filename) and filename.endswith(".csv"):
+        return FileResponse(filename, media_type="text/csv", filename=filename)
+    return {"error": "File not found"}
 
 def sync_to_huggingface():
     try:
@@ -46,8 +116,10 @@ def sync_to_huggingface():
             token=HF_TOKEN
         )
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 [HF SYNC] CSV successfully uploaded to Hugging Face!", flush=True)
+        live_state["hf_sync_status"] = f"SYNCED ({datetime.now().strftime('%H:%M:%S')}) 🟢"
     except Exception as e:
         print(f"⚠️ HF Sync Failed: {e}", flush=True)
+        live_state["hf_sync_status"] = f"ERROR ❌"
 
 REST_URL = "https://live.tradovateapi.com/v1/auth/accesstokenrequest"
 WS_URL = "wss://md.tradovateapi.com/v1/websocket" # LIVE MARKET DATA!
@@ -153,6 +225,9 @@ def process_market_data(md_data):
         row = {"timestamp": ts, "raw_payload": json.dumps(md_data)}
         collected_data.append(row)
         
+        live_state["total_snapshots"] += 1
+        live_state["last_update"] = ts
+        
         # Save every 50 ticks to reduce file I/O overhead
         if len(collected_data) >= 50:
             df = pd.DataFrame(collected_data)
@@ -190,7 +265,7 @@ def start_recorder():
     threading.Thread(target=proactive_token_refresher, daemon=True).start()
     
     # Start the Uptime Robot Health Server thread
-    threading.Thread(target=start_health_server, daemon=True).start()
+    threading.Thread(target=run_fastapi, daemon=True).start()
     
     while True:
         CURRENT_TOKEN = get_fresh_token()
