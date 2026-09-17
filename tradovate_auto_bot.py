@@ -10,6 +10,8 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 import uvicorn
 import zipfile
+import pyarrow as pa
+import pyarrow.parquet as pq
 from huggingface_hub import HfApi, create_repo
 
 # ==============================================================================
@@ -38,7 +40,7 @@ def run_fastapi():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    files = [f for f in os.listdir(".") if f.endswith(".csv") and "tradovate_" in f]
+    files = [f for f in os.listdir(".") if f.endswith(".parquet") and "tradovate_" in f]
     files_html = "".join([f'<li><a href="/download/{f}" style="color:#00e676; text-decoration:none;">📥 {f}</a></li>' for f in files]) or "<li>No files yet...</li>"
 
     html = f"""
@@ -66,22 +68,22 @@ def dashboard():
     <body>
         <div class="card">
             <h1>🚀 Nifty Tradovate Quant Engine</h1>
-            <div class="hf-badge">Hugging Face Vault: {{live_state["hf_sync_status"]}}</div><br>
+            <div class="hf-badge">Hugging Face Vault: {live_state["hf_sync_status"]}</div><br>
             
             <div class="grid">
                 <div class="box">
                     <div class="label">Total Raw Payloads Recorded</div>
-                    <div class="val">{{live_state["total_snapshots"]:,}} Active Ticks</div>
+                    <div class="val">{live_state["total_snapshots"]:,} Active Ticks</div>
                 </div>
             </div>
 
             <div class="files">
-                <div class="label" style="font-weight:bold; margin-bottom: 8px; color: #fff;">💾 Download Daily CSV Files (1 File / Day):</div>
-                <ul>{{files_html}}</ul>
+                <div class="label" style="font-weight:bold; margin-bottom: 8px; color: #fff;">💾 Download Daily Parquet Files (1 File / Day):</div>
+                <ul>{files_html}</ul>
                 <a href="/download-zip" class="btn-zip">📦 Download ALL Days (ZIP)</a>
-                <a href="https://huggingface.co/datasets/{{HF_REPO_ID}}" target="_blank" style="display:inline-block; margin-left: 10px; color:#58a6ff; text-decoration:none; font-size:12px;">☁️ Open HuggingFace Vault ↗</a>
+                <a href="https://huggingface.co/datasets/{HF_REPO_ID}" target="_blank" style="display:inline-block; margin-left: 10px; color:#58a6ff; text-decoration:none; font-size:12px;">☁️ Open HuggingFace Vault ↗</a>
             </div>
-            <p style="color: #6e7681; font-size: 11px; margin-top: 15px;">Last Update: {{live_state["last_update"]}}</p>
+            <p style="color: #6e7681; font-size: 11px; margin-top: 15px;">Last Update: {live_state["last_update"]}</p>
         </div>
     </body>
     </html>
@@ -93,29 +95,29 @@ def download_zip():
     zip_path = "tradovate_all_days.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for f in os.listdir("."):
-            if f.endswith(".csv") and "tradovate_" in f:
+            if f.endswith(".parquet") and "tradovate_" in f:
                 zipf.write(f, arcname=f)
     return FileResponse(zip_path, media_type="application/zip", filename=zip_path)
 
 @app.get("/download/{filename}")
 def download_file(filename: str):
-    if os.path.exists(filename) and filename.endswith(".csv"):
-        return FileResponse(filename, media_type="text/csv", filename=filename)
+    if os.path.exists(filename) and filename.endswith(".parquet"):
+        return FileResponse(filename, media_type="application/octet-stream", filename=filename)
     return {"error": "File not found"}
 
 def sync_to_huggingface():
     try:
         api = HfApi(token=HF_TOKEN)
         create_repo(repo_id=HF_REPO_ID, repo_type="dataset", token=HF_TOKEN, private=True, exist_ok=True)
-        current_csv = get_daily_csv_filename()
+        current_file = get_daily_parquet_filename()
         api.upload_file(
-            path_or_fileobj=current_csv,
-            path_in_repo=f"daily_vault/{current_csv}",
+            path_or_fileobj=current_file,
+            path_in_repo=f"daily_vault/{current_file}",
             repo_id=HF_REPO_ID,
             repo_type="dataset",
             token=HF_TOKEN
         )
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 [HF SYNC] CSV successfully uploaded to Hugging Face!", flush=True)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 [HF SYNC] File successfully uploaded to Hugging Face!", flush=True)
         live_state["hf_sync_status"] = f"SYNCED ({datetime.now().strftime('%H:%M:%S')}) 🟢"
     except Exception as e:
         print(f"⚠️ HF Sync Failed: {e}", flush=True)
@@ -147,9 +149,9 @@ HEADERS = {
 
 SYMBOL = "6EZ6"
 
-def get_daily_csv_filename():
+def get_daily_parquet_filename():
     today_str = datetime.now().strftime("%Y-%m-%d")
-    return f"tradovate_{SYMBOL}_live_data_{today_str}.csv"
+    return f"tradovate_{SYMBOL}_live_data_{today_str}.parquet"
 
 collected_data = []
 has_subscribed = False
@@ -231,11 +233,15 @@ def process_market_data(md_data):
         # Save every 50 ticks to reduce file I/O overhead
         if len(collected_data) >= 50:
             df = pd.DataFrame(collected_data)
-            current_csv = get_daily_csv_filename()
-            hdr = not os.path.exists(current_csv)
-            df.to_csv(current_csv, mode='a', header=hdr, index=False)
+            current_file = get_daily_parquet_filename()
+            table = pa.Table.from_pandas(df)
+            if not os.path.exists(current_file):
+                pq.write_table(table, current_file)
+            else:
+                existing = pq.read_table(current_file)
+                pq.write_table(pa.concat_tables([existing, table]), current_file)
             collected_data.clear()
-            print(f"[{ts}] 💾 [SAVED] 50 new ticks appended to {current_csv}.", flush=True)
+            print(f"[{ts}] 💾 [SAVED] 50 new ticks appended to {current_file}.", flush=True)
             
             # Auto-Sync to Hugging Face
             global last_hf_upload_time
