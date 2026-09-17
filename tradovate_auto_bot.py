@@ -37,9 +37,10 @@ def sync_to_huggingface():
     try:
         api = HfApi(token=HF_TOKEN)
         create_repo(repo_id=HF_REPO_ID, repo_type="dataset", token=HF_TOKEN, private=True, exist_ok=True)
+        current_csv = get_daily_csv_filename()
         api.upload_file(
-            path_or_fileobj=CSV_FILENAME,
-            path_in_repo=f"live_data/{CSV_FILENAME}",
+            path_or_fileobj=current_csv,
+            path_in_repo=f"daily_vault/{current_csv}",
             repo_id=HF_REPO_ID,
             repo_type="dataset",
             token=HF_TOKEN
@@ -73,7 +74,10 @@ HEADERS = {
 }
 
 SYMBOL = "6EZ6"
-CSV_FILENAME = f"tradovate_{SYMBOL}_live_data.csv"
+
+def get_daily_csv_filename():
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    return f"tradovate_{SYMBOL}_live_data_{today_str}.csv"
 
 collected_data = []
 has_subscribed = False
@@ -152,10 +156,11 @@ def process_market_data(md_data):
         # Save every 50 ticks to reduce file I/O overhead
         if len(collected_data) >= 50:
             df = pd.DataFrame(collected_data)
-            hdr = not os.path.exists(CSV_FILENAME)
-            df.to_csv(CSV_FILENAME, mode='a', header=hdr, index=False)
+            current_csv = get_daily_csv_filename()
+            hdr = not os.path.exists(current_csv)
+            df.to_csv(current_csv, mode='a', header=hdr, index=False)
             collected_data.clear()
-            print(f"[{ts}] 💾 [SAVED] 50 new ticks appended to CSV.", flush=True)
+            print(f"[{ts}] 💾 [SAVED] 50 new ticks appended to {current_csv}.", flush=True)
             
             # Auto-Sync to Hugging Face
             global last_hf_upload_time
