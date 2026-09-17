@@ -20,7 +20,7 @@ from huggingface_hub import HfApi, create_repo
 # ==============================================================================
 
 HF_TOKEN = os.getenv("HF_TOKEN", "") # Add this in Render Environment Variables!
-HF_REPO_ID = "gavali77/nifty-tradovate-live-data"
+HF_REPO_ID = os.getenv("HF_REPO_ID", "ashutickdata/Euro-usd-tick-data")
 UPLOAD_INTERVAL_SECONDS = 300 # Upload to HF every 5 mins
 last_hf_upload_time = time.time()
 
