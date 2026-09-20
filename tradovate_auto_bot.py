@@ -4,7 +4,7 @@ import json
 import websocket
 import threading
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import requests
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
@@ -157,7 +157,17 @@ HEADERS = {
 SYMBOL = "6EZ6"
 
 def get_daily_parquet_filename():
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # Convert UTC to IST (+5:30)
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    
+    # Trading day rolls over at 3:30 AM IST. 
+    # If before 03:30 AM, it belongs to yesterday's trading session.
+    if ist_time.hour < 3 or (ist_time.hour == 3 and ist_time.minute < 30):
+        trade_date = ist_time - timedelta(days=1)
+    else:
+        trade_date = ist_time
+        
+    today_str = trade_date.strftime("%Y-%m-%d")
     return f"tradovate_{SYMBOL}_live_data_{today_str}.parquet"
 
 collected_data = []
