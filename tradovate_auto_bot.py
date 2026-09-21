@@ -39,7 +39,7 @@ def run_fastapi():
     port = int(os.getenv("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def dashboard():
     files = [f for f in os.listdir(".") if f.endswith(".parquet") and "tradovate_" in f]
     files_html = "".join([f'<li><a href="/download/{f}" style="color:#00e676; text-decoration:none;">📥 {f}</a></li>' for f in files]) or "<li>No files yet...</li>"
