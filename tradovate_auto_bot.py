@@ -12,7 +12,8 @@ import uvicorn
 import zipfile
 import pyarrow as pa
 import pyarrow.parquet as pq
-from huggingface_hub import HfApi, create_repo
+from huggingface_hub import HfApi, create_repo, hf_hub_download
+import shutil
 
 # ==============================================================================
 # 🚀 TRADOVATE 24/7 AUTO-LOGIN & ZERO-GAP CLOUD RECORDER (Pure Python)
@@ -21,7 +22,7 @@ from huggingface_hub import HfApi, create_repo
 
 HF_TOKEN = os.getenv("HF_TOKEN", "") # Add this in Render Environment Variables!
 HF_REPO_ID = os.getenv("HF_REPO_ID", "ashutickdata/Euro-usd-tick-data")
-UPLOAD_INTERVAL_SECONDS = 300 # Upload to HF every 5 mins
+UPLOAD_INTERVAL_SECONDS = 1800 # Upload to HF every 30 mins to save 5GB bandwidth limit
 last_hf_upload_time = time.time()
 
 live_state = {
@@ -129,6 +130,20 @@ def sync_to_huggingface():
     except Exception as e:
         print(f"⚠️ HF Sync Failed: {e}", flush=True)
         live_state["hf_sync_status"] = f"ERROR ❌"
+
+def sync_custom_file_to_huggingface(filename):
+    try:
+        api = HfApi(token=HF_TOKEN)
+        api.upload_file(
+            path_or_fileobj=filename,
+            path_in_repo=f"daily_vault/{filename}",
+            repo_id=HF_REPO_ID,
+            repo_type="dataset",
+            token=HF_TOKEN
+        )
+        print(f"🌅 [DAY ROLLOVER] Final sync for {filename} complete!", flush=True)
+    except Exception as e:
+        pass
 
 REST_URL = "https://live.tradovateapi.com/v1/auth/accesstokenrequest"
 WS_URL = "wss://md.tradovateapi.com/v1/websocket" # LIVE MARKET DATA!
@@ -262,6 +277,18 @@ def process_market_data(md_data):
         if len(collected_data) >= 50:
             df = pd.DataFrame(collected_data)
             current_file = get_daily_parquet_filename()
+            
+            # --- DAY ROLLOVER PROTECTION (Prevents data leak at midnight) ---
+            global current_active_filename
+            if 'current_active_filename' not in globals():
+                current_active_filename = current_file
+                
+            if current_active_filename != current_file:
+                # Day changed! Force upload the old file one last time
+                threading.Thread(target=sync_custom_file_to_huggingface, args=(current_active_filename,), daemon=True).start()
+                current_active_filename = current_file
+            # -----------------------------------------------------------------
+            
             table = pa.Table.from_pandas(df)
             if not os.path.exists(current_file):
                 pq.write_table(table, current_file)
@@ -288,7 +315,29 @@ def on_close(ws, close_status_code, close_msg):
 def on_open(ws):
     print("🚀 Connecting to Tradovate Server...")
 
+def resume_daily_file_from_hf():
+    filename = get_daily_parquet_filename()
+    if not os.path.exists(filename) and HF_TOKEN and HF_REPO_ID:
+        try:
+            print(f"🔄 Checking if {filename} exists on HF to resume...", flush=True)
+            file_path = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=f"daily_vault/{filename}",
+                repo_type="dataset",
+                token=HF_TOKEN
+            )
+            shutil.copy(file_path, filename)
+            
+            global current_active_filename
+            current_active_filename = filename
+            
+            print(f"✅ Successfully resumed {filename} from HF!", flush=True)
+        except Exception as e:
+            print(f"ℹ️ No existing file on HF for today or error fetching: {e}. Starting fresh.", flush=True)
+
 def start_recorder():
+    resume_daily_file_from_hf()
+    
     global has_subscribed, CURRENT_TOKEN, global_ws
     ws_headers = [
         "Origin: https://trader.tradovate.com",
